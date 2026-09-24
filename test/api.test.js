@@ -654,6 +654,115 @@ function jsonRequest(server, urlPath, payload) {
     assert.ok(Math.abs(plainQuote.layout.sheet.widthMm - 420) < 0.05);
     assert.ok(Math.abs(plainQuote.layout.sheet.heightMm - 297) < 0.05);
 
+    // ---------- 批量裁切下料 /api/cutting ----------
+    // A3 每张裁 1、A2 每张裁 2；10 个印张 → 推荐 A2（5 张，张数更少）
+    const cutResp = await jsonRequest(server, '/api/cutting', {
+      plan: quotePlan,
+      quantity: 10,
+      papers: [
+        { name: 'A3', widthMm: 420, heightMm: 297, pricePerSheet: 1, setupFee: 50 },
+        { name: 'A2', widthMm: 424, heightMm: 594, pricePerSheet: 2, setupFee: 0 },
+      ],
+    });
+    assert.strictEqual(cutResp.status, 200);
+    const cut = JSON.parse(cutResp.body.toString());
+    assert.strictEqual(cut.kind, 'sheet-cutting');
+    assert.strictEqual(cut.feasible, true);
+    assert.strictEqual(cut.quantity, 10);
+    assert.ok(Math.abs(cut.sheet.widthMm - 420) < 0.01);
+    assert.strictEqual(cut.options[0].piecesPerSheet, 1);
+    assert.strictEqual(cut.options[0].sheetsNeeded, 10);
+    assert.strictEqual(cut.options[1].piecesPerSheet, 2);
+    assert.strictEqual(cut.options[1].sheetsNeeded, 5);
+    assert.strictEqual(cut.recommendedIndex, 1);
+    assert.strictEqual(cut.recommended.name, 'A2');
+    // 裁切图：A3 恰好 1 块；A2 为 1×2 整版网格，2 块（无需分段贯通刀）
+    assert.strictEqual(cut.options[0].diagram.pieces.length, 1);
+    assert.strictEqual(cut.options[0].diagram.cuts.length, 0);
+    assert.strictEqual(cut.options[1].diagram.pieces.length, 2);
+    assert.ok(cut.options[1].cutTree.type === 'leaf');
+    assert.strictEqual(cut.options[1].cutTree.cols * cut.options[1].cutTree.rows, 2);
+
+    // 尾张余量：11 个 / A2 每张 2 → 6 张、尾张余 1
+    const cut11Resp = await jsonRequest(server, '/api/cutting', {
+      plan: quotePlan,
+      quantity: 11,
+      papers: [{ name: 'A2', widthMm: 424, heightMm: 594, pricePerSheet: 2, setupFee: 0 }],
+    });
+    const cut11 = JSON.parse(cut11Resp.body.toString());
+    assert.strictEqual(cut11.options[0].sheetsNeeded, 6);
+    assert.strictEqual(cut11.options[0].surplusPieces, 1);
+    assert.strictEqual(cut11.options[0].lastSheetNeededPieces, 1);
+    assert.strictEqual(cut11.options[0].lastSheetRemainderPieces, 1);
+
+    // 数量字符串也接受；0/小数/非数字 → 400
+    const qtyStrResp = await jsonRequest(server, '/api/cutting', {
+      plan: quotePlan, quantity: '7',
+      papers: [{ name: 'A3', widthMm: 420, heightMm: 297, pricePerSheet: 1, setupFee: 0 }],
+    });
+    assert.strictEqual(qtyStrResp.status, 200);
+    assert.strictEqual(JSON.parse(qtyStrResp.body.toString()).quantity, 7);
+    for (const badQty of [0, -2, 3.5, 'abc', '']) {
+      const badQtyResp = await jsonRequest(server, '/api/cutting', {
+        plan: quotePlan, quantity: badQty,
+        papers: [{ name: 'A3', widthMm: 420, heightMm: 297, pricePerSheet: 1, setupFee: 0 }],
+      });
+      assert.strictEqual(badQtyResp.status, 400, `数量 ${JSON.stringify(badQty)} 应返回 400`);
+      assert.match(JSON.parse(badQtyResp.body.toString()).error, /印张数/);
+    }
+
+    // 缺字段 → 400
+    const cutNoPlan = await jsonRequest(server, '/api/cutting', {
+      quantity: 1,
+      papers: [{ name: 'A3', widthMm: 420, heightMm: 297, pricePerSheet: 1, setupFee: 0 }],
+    });
+    assert.strictEqual(cutNoPlan.status, 400);
+    assert.match(JSON.parse(cutNoPlan.body.toString()).error, /plan/);
+
+    const cutNoPapers = await jsonRequest(server, '/api/cutting', { plan: quotePlan, quantity: 1 });
+    assert.strictEqual(cutNoPapers.status, 400);
+    assert.match(JSON.parse(cutNoPapers.body.toString()).error, /papers/);
+
+    const cutNoQty = await jsonRequest(server, '/api/cutting', {
+      plan: quotePlan,
+      papers: [{ name: 'A3', widthMm: 420, heightMm: 297, pricePerSheet: 1, setupFee: 0 }],
+    });
+    assert.strictEqual(cutNoQty.status, 400);
+    assert.match(JSON.parse(cutNoQty.body.toString()).error, /quantity/);
+
+    // 非法纸张规格 → 400
+    const cutBadPaper = await jsonRequest(server, '/api/cutting', {
+      plan: quotePlan, quantity: 1,
+      papers: [{ name: '坏', widthMm: -1, heightMm: 297 }],
+    });
+    assert.strictEqual(cutBadPaper.status, 400);
+    assert.match(JSON.parse(cutBadPaper.body.toString()).error, /宽必须是大于 0/);
+
+    // 所有原纸都裁不出 → 200 + feasible=false + 明确原因（含旋转方向）
+    const cutNoneResp = await jsonRequest(server, '/api/cutting', {
+      plan: quotePlan, quantity: 5,
+      papers: [{ name: 'A5', widthMm: 210, heightMm: 148, pricePerSheet: 0.2, setupFee: 0 }],
+    });
+    assert.strictEqual(cutNoneResp.status, 200);
+    const cutNone = JSON.parse(cutNoneResp.body.toString());
+    assert.strictEqual(cutNone.feasible, false);
+    assert.strictEqual(cutNone.recommended, null);
+    assert.strictEqual(cutNone.reasonCode, 'no_cuttable_paper');
+    assert.match(cutNone.reason, /A5/);
+    assert.match(cutNone.reason, /旋转/);
+    assert.strictEqual(cutNone.options[0].feasible, false);
+    assert.strictEqual(cutNone.options[0].reasons.length, 2);
+
+    // 沿用 plan.sheet 实际印张尺寸：启用定位标记的方案（436×313mm）在 A3 上裁不出
+    const marksCutResp = await jsonRequest(server, '/api/cutting', {
+      plan: marksPlan, quantity: 3,
+      papers: [{ name: 'A3', widthMm: 420, heightMm: 297, pricePerSheet: 1, setupFee: 50 }],
+    });
+    assert.strictEqual(marksCutResp.status, 200);
+    const marksCut = JSON.parse(marksCutResp.body.toString());
+    assert.strictEqual(marksCut.feasible, false);
+    assert.ok(Math.abs(marksCut.sheet.widthMm - 436) < 0.05);
+
     console.log('✅ HTTP 集成测试通过：preflight 200 返回 JSON（含错误不阻断），缺文件 400，');
     console.log('   非 PDF 400，损坏文件 422；同一份带错误报告的 PDF 仍可成功 /api/impose；');
     console.log('   批量校验 /api/preflight/batch：坏文件不阻断好文件、按代码汇总、缺文件/超 10 个 400、');

@@ -753,6 +753,125 @@ main {
 }
 .quote-reasons li { margin: 2px 0; }
 
+/* ---------- 拼版摘要中的批量裁切下料 ---------- */
+.cutting-box {
+  margin-top: 14px;
+  border: 1px solid #bfdcc8;
+  border-radius: 10px;
+  background: #f6fbf7;
+  padding: 14px 16px;
+}
+.cutting-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.cutting-head h3 { margin: 0; font-size: 16px; }
+.cutting-head-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.cutting-head-actions .btn { width: auto; margin-top: 0; }
+.cutting-form { margin-bottom: 6px; }
+.cutting-qty-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 14px;
+}
+.cutting-qty-field input {
+  width: 130px;
+  padding: 6px 10px;
+  border: 1px solid #b7cfbf;
+  border-radius: 6px;
+  font-size: 14px;
+}
+.cutting-qty-field input.invalid {
+  border-color: var(--danger);
+  background: #fef2f2;
+}
+.cutting-layout {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.cutting-options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.cutting-option {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px 12px;
+}
+.cutting-option.recommended {
+  border-color: #2f9e44;
+  box-shadow: 0 0 0 1px #2f9e44;
+  background: #f3fbf5;
+}
+.cutting-option.infeasible {
+  background: #fafafa;
+  opacity: 0.92;
+}
+.cutting-option.infeasible .quote-total { color: var(--danger); }
+.cutting-recommend-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: #2f9e44;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+}
+.cutting-figure {
+  margin: 10px 0 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.cutting-figure figcaption {
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+.cutting-svg {
+  max-width: 100%;
+  height: auto;
+}
+.ct-paper {
+  fill: #f4f6f4;
+}
+.ct-paper-border {
+  fill: none;
+  stroke: #4b5563;
+  stroke-width: 1.2;
+}
+.ct-piece {
+  stroke: #1d4ed8;
+  stroke-width: 0.6;
+  fill: rgba(59, 130, 246, 0.28);
+}
+.ct-piece.rotated {
+  stroke: #c2410c;
+  fill: rgba(249, 115, 22, 0.28);
+}
+.ct-cut {
+  stroke: #111827;
+  stroke-width: 0.9;
+  vector-effect: non-scaling-stroke;
+}
+.ct-piece-label {
+  fill: #1f2937;
+  font-weight: 700;
+  text-anchor: middle;
+  pointer-events: none;
+  user-select: none;
+}
+
 /* ---------- 批量印前校验 ---------- */
 .batch-card h2 { margin: 0 0 8px; font-size: 18px; }
 .batch-intro { margin: 0 0 14px; color: var(--muted); font-size: 14px; }
