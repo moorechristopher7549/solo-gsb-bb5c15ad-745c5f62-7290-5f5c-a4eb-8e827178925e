@@ -753,6 +753,176 @@ main {
 }
 .quote-reasons li { margin: 2px 0; }
 
+/* ---------- 拼版摘要中的批量裁切下料 ---------- */
+.cutting-box {
+  margin-top: 14px;
+  border: 1px solid #bfe3d2;
+  border-radius: 10px;
+  background: #f4fbf7;
+  padding: 14px 16px;
+}
+.cutting-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.cutting-head h3 { margin: 0; font-size: 16px; }
+.cutting-head-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.cutting-head-actions .btn { width: auto; margin-top: 0; }
+.cutting-count-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+.cutting-count-field input {
+  width: 120px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 14px;
+}
+.cutting-count-field input.invalid { border-color: var(--danger); background: #fef2f2; }
+.cutting-layout {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.cutting-infeasible {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px solid #f3b4b4;
+  border-radius: 8px;
+  background: #fef2f2;
+  color: #b91c1c;
+  font-size: 13px;
+}
+.cutting-options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.cutting-option {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px 12px;
+}
+.cutting-option.recommended {
+  border-color: var(--ok);
+  box-shadow: 0 0 0 1px var(--ok);
+  background: #f2fbf6;
+}
+.cutting-option.infeasible {
+  background: #fafafa;
+  opacity: 0.92;
+}
+.cutting-option-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.cutting-option-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  flex-wrap: wrap;
+}
+.cutting-option-spec { color: var(--muted); font-size: 12px; }
+.cutting-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--ok);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+}
+.cutting-rank {
+  font-size: 12px;
+  color: var(--muted);
+}
+.cutting-detail {
+  margin: 6px 0 8px;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 14px;
+  font-size: 13px;
+}
+.cutting-detail dt { color: var(--muted); }
+.cutting-detail dd { margin: 0; }
+.cutting-detail .cutting-detail-key { font-weight: 700; color: var(--ok-dark); }
+.cutting-reasons {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: #b91c1c;
+}
+.cutting-reasons li { margin: 2px 0; }
+.cutting-reasons-text { margin: 4px 0 0; font-size: 12px; color: #b91c1c; }
+.cutting-diagram-wrap {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.cutting-diagram {
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+}
+.cut-paper-bg { fill: #f8fafc; }
+.cut-paper-frame { fill: none; stroke: #334155; stroke-width: 1.6; }
+.cut-item {
+  fill: #cfe2f8;
+  stroke: #2f5f9e;
+  stroke-width: 0.9;
+}
+.cut-item.rotated {
+  fill: #fde7bf;
+  stroke: #b45309;
+  stroke-width: 0.9;
+}
+.cut-item-label {
+  font-size: 11px;
+  fill: #1e293b;
+  font-weight: 700;
+}
+.cut-line {
+  stroke: #dc2626;
+  stroke-width: 1.4;
+  stroke-dasharray: 5 3;
+}
+.cutting-diagram-caption {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+  max-width: 360px;
+}
+.cut-order-box {
+  margin-top: 8px;
+  font-size: 12px;
+}
+.cut-order-box summary { cursor: pointer; color: var(--brand-dark); font-weight: 600; }
+.cut-order-list {
+  margin: 6px 0 0;
+  padding-left: 20px;
+  color: #334155;
+}
+.cut-order-list li { margin: 2px 0; }
+.cut-order-empty { margin: 6px 0 0; color: var(--muted); }
+
 /* ---------- 批量印前校验 ---------- */
 .batch-card h2 { margin: 0 0 8px; font-size: 18px; }
 .batch-intro { margin: 0 0 14px; color: var(--muted); font-size: 14px; }

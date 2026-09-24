@@ -75,6 +75,7 @@ function clearResult() {
   signatureSummaryEl.hidden = true;
   signatureSummaryEl.innerHTML = '';
   clearQuote();
+  clearCutting();
 }
 
 /**
@@ -382,6 +383,7 @@ imposeBtn.addEventListener('click', async () => {
     renderPreview(plan);
     setStatus('拼版完成，可预览页序或下载 PDF。', 'info');
     requestQuote(plan);
+    requestCutting(plan);
   } catch (err) {
     setStatus(err.message || '拼版失败', 'error');
   } finally {
@@ -1190,6 +1192,8 @@ function markQuoteStale() {
     quoteStatusEl.textContent = '纸张规格已修改，点击「按当前纸张重新报价」更新。';
     quoteStatusEl.className = 'status info';
   }
+  // 裁切模块复用同一套纸张规格，一并标记为需重新计算
+  if (typeof markCuttingStale === 'function') markCuttingStale();
 }
 
 async function requestQuote(plan) {
@@ -1383,6 +1387,415 @@ quoteDownloadBtn.addEventListener('click', () => {
   const a = document.createElement('a');
   a.href = url;
   a.download = `${resultBaseName}-用纸报价.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+
+// ---------- 批量裁切下料 ----------
+
+const CUTTING_MAX = 1000000;
+
+const cuttingBoxEl = document.getElementById('cutting-box');
+const cuttingRequiredInput = document.getElementById('cutting-required');
+const cuttingCalcBtn = document.getElementById('cutting-calc-btn');
+const cuttingStatusEl = document.getElementById('cutting-status');
+const cuttingResultEl = document.getElementById('cutting-result');
+const cuttingDownloadBtn = document.getElementById('cutting-download-btn');
+
+let cuttingData = null;
+
+function setCuttingStatus(text, kind) {
+  cuttingStatusEl.textContent = text || '';
+  cuttingStatusEl.className = kind ? `status ${kind}` : 'status';
+}
+
+function clearCutting() {
+  cuttingData = null;
+  cuttingBoxEl.hidden = true;
+  cuttingResultEl.hidden = true;
+  cuttingResultEl.innerHTML = '';
+  cuttingStatusEl.textContent = '';
+  cuttingStatusEl.className = 'status';
+  cuttingCalcBtn.disabled = false;
+  cuttingCalcBtn.dataset.stale = '';
+  cuttingCalcBtn.classList.remove('stale');
+  // 每次重新选择文件/拼版都回到默认 1 个印张，避免沿用上一份文档的数量
+  if (document.activeElement !== cuttingRequiredInput) {
+    cuttingRequiredInput.value = '1';
+  }
+  cuttingRequiredInput.classList.remove('invalid');
+}
+
+/**
+ * 读取所需印张数：仅接受 1～CUTTING_MAX 的整数。
+ * @returns {number|null}
+ */
+function readRequiredSheets() {
+  const raw = cuttingRequiredInput.value;
+  if (!/^\s*\d+\s*$/.test(raw)) {
+    cuttingRequiredInput.classList.add('invalid');
+    setCuttingStatus(`请填写所需印张数（1～${CUTTING_MAX} 的整数）`, 'error');
+    return null;
+  }
+  const value = Number(raw.trim());
+  if (value < 1 || value > CUTTING_MAX) {
+    cuttingRequiredInput.classList.add('invalid');
+    setCuttingStatus(`所需印张数必须在 1～${CUTTING_MAX} 之间`, 'error');
+    return null;
+  }
+  cuttingRequiredInput.classList.remove('invalid');
+  return value;
+}
+
+cuttingRequiredInput.addEventListener('input', () => {
+  cuttingRequiredInput.classList.remove('invalid');
+  markCuttingStale();
+});
+
+/**
+ * 纸张规格或印张数变化后标记方案过期（不自动请求，与报价交互保持一致）。
+ */
+function markCuttingStale() {
+  if (lastPlan && cuttingData && !cuttingCalcBtn.dataset.stale) {
+    cuttingCalcBtn.dataset.stale = '1';
+    cuttingCalcBtn.classList.add('stale');
+    setCuttingStatus('纸张规格或印张数已修改，点击「计算裁切方案」更新。', 'info');
+  }
+}
+
+async function requestCutting(plan) {
+  cuttingBoxEl.hidden = false;
+  cuttingResultEl.hidden = true;
+  cuttingResultEl.innerHTML = '';
+  cuttingCalcBtn.disabled = true;
+  cuttingCalcBtn.dataset.stale = '';
+  cuttingCalcBtn.classList.remove('stale');
+
+  const requiredSheets = readRequiredSheets();
+  if (requiredSheets === null) {
+    cuttingCalcBtn.disabled = false;
+    cuttingData = null;
+    return;
+  }
+
+  const { papers, errors } = readPaperInputs();
+  if (errors.length) {
+    paperErrorEl.textContent = errors.join('；');
+    cuttingCalcBtn.disabled = false;
+    cuttingData = null;
+    setCuttingStatus('纸张规格存在未填或非法项，已暂停裁切计算，请先修正后重新计算。', 'error');
+    return;
+  }
+  if (papers.length === 0) {
+    cuttingCalcBtn.disabled = false;
+    cuttingData = null;
+    setCuttingStatus('尚未维护任何纸张规格，请先在上方增加至少一种。', 'error');
+    return;
+  }
+  paperErrorEl.textContent = '';
+  setCuttingStatus('正在用直线贯通分割搜索计算各原纸的裁切方案…', 'info');
+
+  try {
+    const resp = await fetch('/api/cutting', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan, papers, requiredSheets }),
+    });
+    if (!resp.ok) {
+      let message = `裁切计算失败（HTTP ${resp.status}）`;
+      try {
+        const data = await resp.json();
+        if (data && data.error) message = data.error;
+      } catch (_) { /* 使用默认提示 */ }
+      throw new Error(message);
+    }
+    cuttingData = await resp.json();
+    renderCuttingResult();
+    if (cuttingData.feasible) {
+      const rec = cuttingData.options.find((o) => o.index === cuttingData.recommended.index);
+      setCuttingStatus(
+        `推荐方案：${rec.name}（每张出 ${rec.yieldsPerSheet} 个印张，`
+        + `共需原纸 ${rec.sheetsRequired} 张，总废料 ${fmtArea(rec.waste.totalAreaMm2)}）。`,
+        'info',
+      );
+    } else {
+      setCuttingStatus('维护的原纸均无法裁出该印张，见下方原因。', 'error');
+    }
+  } catch (err) {
+    cuttingData = null;
+    cuttingResultEl.hidden = true;
+    setCuttingStatus(err.message || '裁切计算失败', 'error');
+  } finally {
+    cuttingCalcBtn.disabled = false;
+  }
+}
+
+cuttingCalcBtn.addEventListener('click', () => {
+  if (lastPlan) requestCutting(lastPlan);
+});
+
+const fmtArea = (v) => `${Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 1 })} mm²`;
+
+/**
+ * 渲染裁切结果：顶部印张信息 + 可行/不可行方案卡片（按服务端推荐顺序排列）。
+ */
+function renderCuttingResult() {
+  cuttingResultEl.innerHTML = '';
+
+  const { layout, requiredSheets } = cuttingData;
+  const info = document.createElement('p');
+  info.className = 'cutting-layout';
+  info.textContent = `印张实际输出尺寸 ${fmtMm(layout.sheet.widthMm)} × ${fmtMm(layout.sheet.heightMm)}`
+    + `；需要 ${requiredSheets} 个印张。下方方案均由可执行的直线贯通裁切树生成`
+    + '（非面积估算，印张之间无重叠），按所需原纸张数、废料面积依次推荐。';
+  cuttingResultEl.appendChild(info);
+
+  if (!cuttingData.feasible) {
+    const banner = document.createElement('div');
+    banner.className = 'cutting-infeasible';
+    banner.textContent = cuttingData.reason;
+    cuttingResultEl.appendChild(banner);
+  }
+
+  const list = document.createElement('div');
+  list.className = 'cutting-options';
+  // 可行方案按服务端推荐顺序（所需原纸张数 → 废料面积）排列，不可行方案置后
+  const ordered = cuttingData.options.slice().sort((a, b) => {
+    if (a.feasible !== b.feasible) return a.feasible ? -1 : 1;
+    if (!a.feasible) return a.index - b.index;
+    if (a.sheetsRequired !== b.sheetsRequired) return a.sheetsRequired - b.sheetsRequired;
+    if (a.waste.totalAreaMm2 !== b.waste.totalAreaMm2) {
+      return a.waste.totalAreaMm2 - b.waste.totalAreaMm2;
+    }
+    return a.index - b.index;
+  });
+  ordered.forEach((opt, rank) => {
+    list.appendChild(renderCuttingOption(opt, rank));
+  });
+  cuttingResultEl.appendChild(list);
+  cuttingResultEl.hidden = false;
+}
+
+function renderCuttingOption(opt, rank) {
+  const card = document.createElement('div');
+  card.className = 'cutting-option';
+  if (!opt.feasible) {
+    card.classList.add('infeasible');
+  } else if (opt.index === cuttingData.recommended.index) {
+    card.classList.add('recommended');
+  }
+
+  const head = document.createElement('div');
+  head.className = 'cutting-option-head';
+  const title = document.createElement('div');
+  title.className = 'cutting-option-title';
+  if (opt.feasible && opt.index === cuttingData.recommended.index) {
+    const badge = document.createElement('span');
+    badge.className = 'cutting-badge';
+    badge.textContent = '推荐';
+    title.appendChild(badge);
+  }
+  if (opt.feasible) {
+    const rankEl = document.createElement('span');
+    rankEl.className = 'cutting-rank';
+    rankEl.textContent = `方案 ${rank + 1}`;
+    title.appendChild(rankEl);
+  }
+  const name = document.createElement('strong');
+  name.textContent = opt.name;
+  title.appendChild(name);
+  const spec = document.createElement('span');
+  spec.className = 'cutting-option-spec';
+  spec.textContent = `原纸 ${opt.paper.widthMm} × ${opt.paper.heightMm} mm`;
+  title.appendChild(spec);
+  head.appendChild(title);
+  card.appendChild(head);
+
+  if (!opt.feasible) {
+    if (opt.reasons && opt.reasons.length) {
+      const reasons = document.createElement('ul');
+      reasons.className = 'cutting-reasons';
+      for (const r of opt.reasons) {
+        const li = document.createElement('li');
+        li.textContent = r.message;
+        reasons.appendChild(li);
+      }
+      card.appendChild(reasons);
+    } else {
+      const p = document.createElement('p');
+      p.className = 'cutting-reasons-text';
+      p.textContent = opt.reason || '无法裁出该印张';
+      card.appendChild(p);
+    }
+    return card;
+  }
+
+  const grid = document.createElement('dl');
+  grid.className = 'cutting-detail';
+  const placementText = opt.placement.rotated ? '原纸旋转 90°' : '原纸原向';
+  const rotationLine = opt.placement.rotatedItemCount > 0
+    ? `（其中 ${opt.placement.rotatedItemCount} 个印张旋转 90° 摆放）`
+    : '';
+  const lastText = opt.lastSheet.isLastSheetPartial
+    ? `前 ${opt.lastSheet.fullSheets} 张各出 ${opt.yieldsPerSheet} 个，`
+      + `尾张出 ${opt.lastSheet.lastSheetYield} 个（尾张尚余 ${opt.lastSheet.spareCapacity} 个位）`
+    : `${opt.sheetsRequired} 张均出满 ${opt.yieldsPerSheet} 个，无尾张余量`;
+  const items = [
+    ['摆放方向', `${placementText}，版面 ${opt.placement.frameWidthMm} × ${opt.placement.frameHeightMm} mm${rotationLine}`],
+    ['单张产出', `${opt.yieldsPerSheet} 个印张（共 ${opt.cutting.cutCount} 刀贯通裁切）`],
+    ['所需原纸张数', `${opt.sheetsRequired} 张`],
+    ['尾张余量', lastText],
+    ['单张废料', `${fmtArea(opt.waste.perSheetAreaMm2)}（印张利用率 ${opt.utilizationPercent}%）`],
+    ['总废料面积', fmtArea(opt.waste.totalAreaMm2)],
+  ];
+  for (const [label, value] of items) {
+    const dt = document.createElement('dt');
+    dt.textContent = label;
+    const dd = document.createElement('dd');
+    dd.textContent = value;
+    if (label === '所需原纸张数') dd.className = 'cutting-detail-key';
+    grid.append(dt, dd);
+  }
+  card.appendChild(grid);
+
+  card.appendChild(buildCuttingDiagram(opt));
+  card.appendChild(buildCutOrder(opt));
+  return card;
+}
+
+/**
+ * 按原纸真实比例绘制 SVG 裁切图：原纸边框、贯通裁切线、印张（旋转印张用
+ * 浅色区分）、尺寸标注。坐标取自服务端裁切树展平后的绝对 mm 坐标。
+ */
+function buildCuttingDiagram(opt) {
+  const wrap = document.createElement('div');
+  wrap.className = 'cutting-diagram-wrap';
+
+  const frameW = opt.placement.frameWidthMm;
+  const frameH = opt.placement.frameHeightMm;
+  // 图宽固定 320px，等比缩放
+  const pxPerMm = 320 / frameW;
+  const widthPx = frameW * pxPerMm;
+  const heightPx = frameH * pxPerMm;
+
+  const svgNS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(svgNS, 'svg');
+  svg.setAttribute('class', 'cutting-diagram');
+  svg.setAttribute('viewBox', `0 0 ${widthPx} ${heightPx}`);
+  svg.setAttribute('width', widthPx.toFixed(1));
+  svg.setAttribute('height', heightPx.toFixed(1));
+  svg.setAttribute('role', 'img');
+  svg.setAttribute('aria-label',
+    `${opt.name} 裁切图：${frameW} × ${frameH} mm 原纸，每张裁出 ${opt.yieldsPerSheet} 个印张`);
+
+  // 原纸底色与边框
+  const bg = document.createElementNS(svgNS, 'rect');
+  bg.setAttribute('x', 0); bg.setAttribute('y', 0);
+  bg.setAttribute('width', widthPx); bg.setAttribute('height', heightPx);
+  bg.setAttribute('class', 'cut-paper-bg');
+  svg.appendChild(bg);
+
+  // 印张位
+  opt.cutting.items.forEach((item, i) => {
+    const rect = document.createElementNS(svgNS, 'rect');
+    rect.setAttribute('x', (item.xMm * pxPerMm).toFixed(2));
+    rect.setAttribute('y', (item.yMm * pxPerMm).toFixed(2));
+    rect.setAttribute('width', (item.widthMm * pxPerMm).toFixed(2));
+    rect.setAttribute('height', (item.heightMm * pxPerMm).toFixed(2));
+    rect.setAttribute('class', item.rotated ? 'cut-item rotated' : 'cut-item');
+    svg.appendChild(rect);
+
+    // 位编号（过小则不标文字，避免重叠成糊块）
+    if (item.widthMm * pxPerMm >= 26 && item.heightMm * pxPerMm >= 16) {
+      const label = document.createElementNS(svgNS, 'text');
+      label.setAttribute('x', ((item.xMm + item.widthMm / 2) * pxPerMm).toFixed(2));
+      label.setAttribute('y', ((item.yMm + item.heightMm / 2) * pxPerMm).toFixed(2));
+      label.setAttribute('class', 'cut-item-label');
+      label.setAttribute('text-anchor', 'middle');
+      label.setAttribute('dominant-baseline', 'central');
+      label.textContent = String(i + 1);
+      svg.appendChild(label);
+    }
+  });
+
+  // 贯通裁切线（执行顺序编号已在下方列表给出）
+  opt.cutting.cuts.forEach((cut) => {
+    const line = document.createElementNS(svgNS, 'line');
+    line.setAttribute('x1', (cut.x1Mm * pxPerMm).toFixed(2));
+    line.setAttribute('y1', (cut.y1Mm * pxPerMm).toFixed(2));
+    line.setAttribute('x2', (cut.x2Mm * pxPerMm).toFixed(2));
+    line.setAttribute('y2', (cut.y2Mm * pxPerMm).toFixed(2));
+    line.setAttribute('class', 'cut-line');
+    svg.appendChild(line);
+  });
+
+  const frame = document.createElementNS(svgNS, 'rect');
+  frame.setAttribute('x', 0); frame.setAttribute('y', 0);
+  frame.setAttribute('width', widthPx); frame.setAttribute('height', heightPx);
+  frame.setAttribute('class', 'cut-paper-frame');
+  svg.appendChild(frame);
+
+  wrap.appendChild(svg);
+
+  const caption = document.createElement('p');
+  caption.className = 'cutting-diagram-caption';
+  caption.textContent = `裁切图（按比例）：${frameW} × ${frameH} mm，`
+    + `红虚线为贯通裁切线，深色块为印张（${opt.cutting.item.widthMm} × `
+    + `${opt.cutting.item.heightMm} mm），浅色块为旋转 90° 的印张。`;
+  wrap.appendChild(caption);
+  return wrap;
+}
+
+/**
+ * 现场裁切顺序列表：cuts 已由服务端按先序（先切当前矩形再切子矩形）给出。
+ */
+function buildCutOrder(opt) {
+  const details = document.createElement('details');
+  details.className = 'cut-order-box';
+  const summary = document.createElement('summary');
+  summary.textContent = `裁切顺序（${opt.cutting.cutCount} 刀，按此顺序每刀均为贯通直线）`;
+  details.appendChild(summary);
+  if (opt.cutting.cutCount === 0) {
+    const p = document.createElement('p');
+    p.className = 'cut-order-empty';
+    p.textContent = '原纸尺寸与印张一致，无需裁切。';
+    details.appendChild(p);
+    return details;
+  }
+  const ol = document.createElement('ol');
+  ol.className = 'cut-order-list';
+  opt.cutting.cuts.forEach((cut, i) => {
+    const li = document.createElement('li');
+    let pos;
+    if (cut.direction === 'v') {
+      // x1 为距原纸左边的绝对位置；该刀贯通当前料件
+      pos = `在 ${cut.pieceWidthMm} × ${cut.pieceHeightMm} mm 料件上，`
+        + `距料件左边 ${Math.round((cut.x1Mm - cut.pieceXMm) * 100) / 100} mm 处竖切贯通`
+        + `（线长 ${cut.pieceHeightMm} mm）`;
+    } else {
+      const fromBottom = Math.round(
+        (cut.pieceYMm + cut.pieceHeightMm - cut.y1Mm) * 100,
+      ) / 100;
+      pos = `在 ${cut.pieceWidthMm} × ${cut.pieceHeightMm} mm 料件上，`
+        + `距料件下边 ${fromBottom} mm 处横切贯通（线长 ${cut.pieceWidthMm} mm）`;
+    }
+    li.textContent = `第 ${i + 1} 刀：${pos}`;
+    ol.appendChild(li);
+  });
+  details.appendChild(ol);
+  return details;
+}
+
+cuttingDownloadBtn.addEventListener('click', () => {
+  if (!cuttingData) return;
+  const json = JSON.stringify(cuttingData, null, 2);
+  const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${resultBaseName}-批量裁切下料.json`;
   document.body.appendChild(a);
   a.click();
   a.remove();

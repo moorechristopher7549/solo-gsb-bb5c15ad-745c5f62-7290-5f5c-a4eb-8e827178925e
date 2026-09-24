@@ -13,6 +13,7 @@ const {
 } = require('./lib/preflight-batch');
 const { diffPreflightReports } = require('./lib/preflight-diff');
 const { buildPaperQuote } = require('./lib/quote');
+const { buildCuttingPlan } = require('./lib/cutting');
 
 const app = express();
 const PORT = parseInt(process.env.PORT, 10) || 3000;
@@ -242,6 +243,37 @@ app.post('/api/quote', (req, res) => {
   } catch (err) {
     return res.status(400).json({
       error: `报价参数无效：${err && err.message ? err.message : '未知错误'}`,
+    });
+  }
+});
+
+// 批量裁切下料：拼版完成后传入拼版方案、页面维护的纸张规格与所需印张数，
+// 沿用 plan.sheet 的实际输出尺寸枚举纸张原向/旋转 90°，以带记忆化的矩形
+// 分割搜索生成可执行的直线贯通裁切树（非面积估算、非重叠摆放），返回每种
+// 原纸的裁切图、单张产出、所需原纸张数与尾张余量。
+// 入参（尺寸/数量）不合法返回 400；没有任何纸张能裁出时仍返回 200，结果中
+// feasible=false 并在 reason 中说明原因（属正常结果，便于前端直接展示）。
+app.post('/api/cutting', (req, res) => {
+  const body = req.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return res.status(400).json({ error: '请以 JSON body 提供拼版方案 plan、纸张规格 papers 与所需印张数 requiredSheets' });
+  }
+  const { plan, papers, requiredSheets } = body;
+  if (!plan || typeof plan !== 'object') {
+    return res.status(400).json({ error: '缺少拼版方案 plan（请使用拼版响应头 X-Imposition-Plan 的内容）' });
+  }
+  if (!Array.isArray(papers)) {
+    return res.status(400).json({ error: '缺少纸张规格数组 papers（宽、高、单价、开机费）' });
+  }
+  if (requiredSheets === undefined || requiredSheets === null) {
+    return res.status(400).json({ error: '缺少所需印张数 requiredSheets（1～1000000 的整数）' });
+  }
+  try {
+    const cutting = buildCuttingPlan(plan, papers, requiredSheets);
+    return res.json(cutting);
+  } catch (err) {
+    return res.status(400).json({
+      error: `裁切参数无效：${err && err.message ? err.message : '未知错误'}`,
     });
   }
 });

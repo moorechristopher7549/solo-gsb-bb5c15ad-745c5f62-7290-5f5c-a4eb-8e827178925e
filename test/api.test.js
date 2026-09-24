@@ -599,6 +599,107 @@ function jsonRequest(server, urlPath, payload) {
     assert.strictEqual(badJson.status, 400);
     assert.match(JSON.parse(badJson.body.toString()).error, /JSON/);
 
+    // ---------- 批量裁切下料 /api/cutting ----------
+    // A4 竖版展开印张 420 × 297 mm：A3 恰好出 1 个，大度对开出 8 个
+    const cuttingResp = await jsonRequest(server, '/api/cutting', {
+      plan: quotePlan,
+      papers: [
+        { name: 'A3 铜版', widthMm: 420, heightMm: 297, pricePerSheet: 1, setupFee: 50 },
+        { name: '大度对开', widthMm: 889, heightMm: 1194, pricePerSheet: 2, setupFee: 0 },
+        { name: 'A4 太小', widthMm: 297, heightMm: 210, pricePerSheet: 0.3, setupFee: 10 },
+      ],
+      requiredSheets: 100,
+    });
+    assert.strictEqual(cuttingResp.status, 200);
+    const cutting = JSON.parse(cuttingResp.body.toString());
+    assert.strictEqual(cutting.kind, 'sheet-cutting-plan');
+    assert.strictEqual(cutting.requiredSheets, 100);
+    assert.strictEqual(cutting.feasible, true);
+    assert.strictEqual(cutting.recommended.name, '大度对开');
+
+    const cutA3 = cutting.options[0];
+    assert.strictEqual(cutA3.yieldsPerSheet, 1);
+    assert.strictEqual(cutA3.sheetsRequired, 100);
+    assert.strictEqual(cutA3.waste.perSheetAreaMm2, 0);
+    assert.strictEqual(cutA3.cutting.items.length, 1);
+    assert.strictEqual(cutA3.cutting.cuts.length, 0);
+
+    const cutBig = cutting.options[1];
+    assert.strictEqual(cutBig.yieldsPerSheet, 8);
+    assert.strictEqual(cutBig.sheetsRequired, 13);
+    assert.strictEqual(cutBig.lastSheet.fullSheets, 12);
+    assert.strictEqual(cutBig.lastSheet.lastSheetYield, 4);
+    assert.strictEqual(cutBig.lastSheet.spareCapacity, 4);
+    assert.strictEqual(cutBig.cutting.items.length, 8);
+    assert.ok(cutBig.cutting.cuts.length >= 1);
+    // 裁切图数据：所有印张都在原纸范围内、尺寸为印张原向或旋转 90°
+    for (const it of cutBig.cutting.items) {
+      assert.ok(it.xMm + it.widthMm <= 889.01 && it.yMm + it.heightMm <= 1194.01);
+      const dims = it.rotated
+        ? [297, 420]
+        : [420, 297];
+      assert.ok(Math.abs(it.widthMm - dims[0]) < 0.01 && Math.abs(it.heightMm - dims[1]) < 0.01);
+    }
+
+    // 全部原纸都放不下：HTTP 200 + feasible=false + 明确原因
+    const cutNoFitResp = await jsonRequest(server, '/api/cutting', {
+      plan: quotePlan,
+      papers: [{ name: 'A4', widthMm: 297, heightMm: 210, pricePerSheet: 0.3, setupFee: 10 }],
+      requiredSheets: 5,
+    });
+    assert.strictEqual(cutNoFitResp.status, 200);
+    const cutNoFit = JSON.parse(cutNoFitResp.body.toString());
+    assert.strictEqual(cutNoFit.feasible, false);
+    assert.strictEqual(cutNoFit.recommended, null);
+    assert.strictEqual(cutNoFit.reasonCode, 'no_fitting_paper');
+    assert.match(cutNoFit.reason, /A4/);
+    assert.strictEqual(cutNoFit.options[0].feasible, false);
+    assert.strictEqual(cutNoFit.options[0].reasons.length, 2);
+
+    // 参数错误 -> 400
+    const cutNoPlan = await jsonRequest(server, '/api/cutting', {
+      papers: [{ widthMm: 420, heightMm: 297 }], requiredSheets: 1,
+    });
+    assert.strictEqual(cutNoPlan.status, 400);
+    assert.match(JSON.parse(cutNoPlan.body.toString()).error, /plan/);
+
+    const cutNoPapers = await jsonRequest(server, '/api/cutting', {
+      plan: quotePlan, requiredSheets: 1,
+    });
+    assert.strictEqual(cutNoPapers.status, 400);
+    assert.match(JSON.parse(cutNoPapers.body.toString()).error, /papers/);
+
+    const cutNoQty = await jsonRequest(server, '/api/cutting', {
+      plan: quotePlan, papers: [{ widthMm: 420, heightMm: 297 }],
+    });
+    assert.strictEqual(cutNoQty.status, 400);
+    assert.match(JSON.parse(cutNoQty.body.toString()).error, /requiredSheets/);
+
+    for (const badQty of [0, -1, 1.5, 'abc', null]) {
+      const bad = await jsonRequest(server, '/api/cutting', {
+        plan: quotePlan,
+        papers: [{ widthMm: 420, heightMm: 297, pricePerSheet: 0, setupFee: 0 }],
+        requiredSheets: badQty,
+      });
+      assert.strictEqual(bad.status, 400, `数量 ${JSON.stringify(badQty)} 应返回 400`);
+      assert.match(JSON.parse(bad.body.toString()).error, /所需印张数/);
+    }
+
+    const cutBadPaper = await jsonRequest(server, '/api/cutting', {
+      plan: quotePlan,
+      papers: [{ widthMm: -1, heightMm: 297, pricePerSheet: 0, setupFee: 0 }],
+      requiredSheets: 1,
+    });
+    assert.strictEqual(cutBadPaper.status, 400);
+    assert.match(JSON.parse(cutBadPaper.body.toString()).error, /宽必须是大于 0/);
+
+    // 裁切接口不影响报价接口（再次调用报价仍 200）
+    const quoteStillOk = await jsonRequest(server, '/api/quote', {
+      plan: quotePlan,
+      papers: [{ name: 'A3 铜版', widthMm: 420, heightMm: 297, pricePerSheet: 1, setupFee: 50 }],
+    });
+    assert.strictEqual(quoteStillOk.status, 200);
+
     // ---------- 印张定位标记 /api/impose?registrationMarks=on ----------
     // 5 页 A4：启用后输出页 = (2×595.28+2×8mm) × (841.89+2×8mm)，方案记录实际印张宽高
     const MM8_PT = 8 * (72 / 25.4);
